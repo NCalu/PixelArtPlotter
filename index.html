@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GRBL Console</title>
+<style>
+  :root {
+    --bg-header: #f5f5f5; --text-header: #222; --bg-viewer: #eeeeee; --text-viewer: #222;
+    --btn-bg: #ddd; --btn-hover: #ccc; --scrollbar-bg: #ddd; --scrollbar-thumb: #aaa;
+    --line: #bbb; --hl: #222; --hl-text: #fff; --dim: #888; --field: #fff;
+  }
+  body.dark {
+    --bg-header: #222; --text-header: white; --bg-viewer: #2c2c2c; --text-viewer: white;
+    --btn-bg: #444; --btn-hover: #555; --scrollbar-bg: #555; --scrollbar-thumb: #888;
+    --line: #555; --hl: #fff; --hl-text: #000; --dim: #999; --field: #1a1a1a;
+  }
+  html, body { margin: 0; padding: 0; height: 100%; font-family: sans-serif; overflow: hidden; }
+  body { background: var(--bg-viewer); color: var(--text-viewer); display: flex; flex-direction: column; }
+
+  header { height: 50px; flex: none; background: var(--bg-header); color: var(--text-header); display: flex; align-items: center; justify-content: space-between; padding: 0 20px; }
+  header .left, header .right { display: flex; align-items: center; gap: 15px; }
+  header strong { font-size: 16px; }
+  button, select { background: var(--btn-bg); color: var(--text-header); border: none; padding: 5px 10px; cursor: pointer; font-size: 14px; font-family: inherit; }
+  button:hover { background: var(--btn-hover); }
+  button:disabled { opacity: .4; cursor: default; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--dim); outline-offset: 1px; }
+  .theme-toggle { display: flex; align-items: center; gap: 10px; font-size: 14px; }
+  .switch { position: relative; display: inline-block; width: 34px; height: 20px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider { position: absolute; cursor: pointer; inset: 0; background: #ccc; transition: .4s; border-radius: 50px; }
+  .slider:before { position: absolute; content: ""; height: 12px; width: 12px; border-radius: 50px; left: 4px; bottom: 4px; background: white; transition: .4s; }
+  .switch input:checked + .slider { background: #888; }
+  .switch input:checked + .slider:before { transform: translateX(14px); }
+  .chk { font-size: 14px; display: flex; align-items: center; gap: 5px; }
+
+  main { flex: 1; min-height: 0; display: flex; }
+  section { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 10px; gap: 8px; }
+  section + section { border-left: 1px solid var(--line); }
+  .bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .bar .info { margin-left: auto; font-size: 13px; color: var(--dim); }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+
+  #progress { height: 4px; background: var(--scrollbar-bg); flex: none; }
+  #progress div { height: 100%; width: 0; background: var(--hl); }
+  #gcode, #log { flex: 1; min-height: 0; overflow-y: auto; background: var(--field); border: 1px solid var(--line); scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-bg); }
+  #gcode .ln { display: flex; padding: 1px 8px 1px 0; white-space: pre; }
+  #gcode .n { width: 44px; flex: none; text-align: right; padding-right: 10px; color: var(--dim); }
+  #gcode .ln.done { color: var(--dim); }
+  #gcode .ln.cur { background: var(--hl); color: var(--hl-text); }
+  #gcode .ln.cur .n { color: inherit; }
+  #log { padding: 6px 8px; white-space: pre-wrap; word-break: break-all; }
+  #log .tx { font-weight: bold; } #log .err { text-decoration: underline; } #log .sys { color: var(--dim); font-style: italic; }
+  #state { padding: 5px 8px; background: var(--btn-bg); color: var(--text-header); }
+  form { display: flex; gap: 6px; }
+  #cmd { flex: 1; background: var(--field); color: var(--text-viewer); border: 1px solid var(--line); padding: 6px 8px; }
+
+  @media (max-width: 800px) {
+    html, body { overflow: auto; } main { flex-direction: column; }
+    section { min-height: 60vh; } section + section { border-left: none; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="left">
+    <strong>GRBL Console</strong>
+    <select id="baud" aria-label="Baud rate"><option>115200</option><option>9600</option><option>19200</option><option>38400</option><option>57600</option><option>250000</option></select>
+    <button id="connect">Connect</button>
+  </div>
+  <div class="right">
+    <label class="chk"><input type="checkbox" id="poll" checked> Poll status</label>
+    <div class="theme-toggle"><span>Dark</span>
+      <label class="switch"><input type="checkbox" id="theme"><span class="slider"></span></label>
+    </div>
+  </div>
+</header>
+
+<main>
+  <section>
+    <div class="bar">
+      <button id="run" disabled>Run</button>
+      <button id="pause" disabled>Pause</button>
+      <button id="step" disabled>Step</button>
+      <button id="stop" disabled>Stop</button>
+      <span class="info" id="runinfo">Line 0 / 0</span>
+    </div>
+    <div id="progress"><div></div></div>
+    <div id="gcode" class="mono" aria-label="G-code program"></div>
+  </section>
+
+  <section>
+    <div id="state" class="mono">State: —</div>
+    <div class="bar">
+      <button data-cmd="$$">$$</button><button data-cmd="$#">$#</button><button data-cmd="$G">$G</button>
+      <button data-cmd="$I">$I</button><button data-cmd="$H">Home</button><button data-cmd="$X">Unlock</button>
+      <button data-rt="?">?</button><button data-rt="!">Hold</button><button data-rt="~">Resume</button>
+      <button data-rt="reset">Reset</button><button id="clear">Clear</button>
+    </div>
+    <div id="log" class="mono" role="log"></div>
+    <form id="form" autocomplete="off">
+      <input id="cmd" class="mono" placeholder="Command, then Enter (↑/↓ history)" disabled>
+      <button id="send" disabled>Send</button>
+    </form>
+  </section>
+</main>
+
+<script>
+// ---- Hard-coded G-code program: edit here in the source ----
+const GCODE = `G0 X210 Y0 (ORIGIN POSITION)
+G0 Z0
+M0
+
+G0 Z-1 (PEN UP $112=RAPID FEED Z)
+
+G0 X50 Y-50 (POSITION $110=RAPID FEED X $111=RAPID FEED Y)
+G1 Z5 F8000 (PEN DOWN)
+G1 X60 F2000
+G1 Y-60
+G1 X50
+G1 Y-50
+G0 Z-1
+
+G0 X210 Y0 (TOOL CHANGE POSITION)
+M0 (TOOL CHANGE)
+
+G0 X100 Y-100
+G1 Z5 F8000
+G1 X120 F2000
+G1 Y-120
+G1 X100
+G1 Y-100
+G0 Z-1
+
+G0 X150 Y-150
+G1 Z5 F8000
+G1 X149.9849 Y-151.2271 F2000
+G1 X149.9398 Y-152.4534
+G1 X149.8645 Y-153.6782
+G1 X149.7592 Y-154.9009
+G1 X149.6240 Y-156.1205
+G1 X149.4588 Y-157.3365
+G1 X149.2639 Y-158.5481
+G1 X149.0393 Y-159.7545
+G1 X148.7851 Y-160.9551
+G1 X148.5016 Y-162.1490
+G1 X148.1888 Y-163.3356
+G1 X147.8470 Y-164.5142
+G1 X147.4764 Y-165.6841
+G1 X147.0772 Y-166.8445
+G1 X146.6496 Y-167.9948
+G1 X146.1940 Y-169.1342
+G1 X145.7105 Y-170.2621
+G1 X145.1995 Y-171.3778
+G1 X144.6612 Y-172.4806
+G1 X144.0961 Y-173.5698
+G1 X143.5043 Y-174.6449
+G1 X142.8864 Y-175.7051
+G1 X142.2427 Y-176.7499
+G1 X141.5735 Y-177.7785
+G1 X140.8792 Y-178.7904
+G1 X140.1604 Y-179.7850
+G1 X139.4173 Y-180.7616
+G1 X138.6505 Y-181.7197
+G1 X137.8604 Y-182.6586
+G1 X137.0476 Y-183.5779
+G1 X136.2124 Y-184.4770
+G1 X135.3553 Y-185.3553
+G1 X134.4770 Y-186.2124
+G1 X133.5779 Y-187.0476
+G1 X132.6586 Y-187.8604
+G1 X131.7197 Y-188.6505
+G1 X130.7616 Y-189.4173
+G1 X129.7850 Y-190.1604
+G1 X128.7904 Y-190.8792
+G1 X127.7785 Y-191.5735
+G1 X126.7499 Y-192.2427
+G1 X125.7051 Y-192.8864
+G1 X124.6449 Y-193.5043
+G1 X123.5698 Y-194.0961
+G1 X122.4806 Y-194.6612
+G1 X121.3778 Y-195.1995
+G1 X120.2621 Y-195.7105
+G1 X119.1342 Y-196.1940
+G1 X117.9948 Y-196.6496
+G1 X116.8445 Y-197.0772
+G1 X115.6841 Y-197.4764
+G1 X114.5142 Y-197.8470
+G1 X113.3356 Y-198.1888
+G1 X112.1490 Y-198.5016
+G1 X110.9551 Y-198.7851
+G1 X109.7545 Y-199.0393
+G1 X108.5481 Y-199.2639
+G1 X107.3365 Y-199.4588
+G1 X106.1205 Y-199.6240
+G1 X104.9009 Y-199.7592
+G1 X103.6782 Y-199.8645
+G1 X102.4534 Y-199.9398
+G1 X101.2271 Y-199.9849
+G1 X100.0000 Y-200.0000
+G1 X98.7729 Y-199.9849
+G1 X97.5466 Y-199.9398
+G1 X96.3218 Y-199.8645
+G1 X95.0991 Y-199.7592
+G1 X93.8795 Y-199.6240
+G1 X92.6635 Y-199.4588
+G1 X91.4519 Y-199.2639
+G1 X90.2455 Y-199.0393
+G1 X89.0449 Y-198.7851
+G1 X87.8510 Y-198.5016
+G1 X86.6644 Y-198.1888
+G1 X85.4858 Y-197.8470
+G1 X84.3159 Y-197.4764
+G1 X83.1555 Y-197.0772
+G1 X82.0052 Y-196.6496
+G1 X80.8658 Y-196.1940
+G1 X79.7379 Y-195.7105
+G1 X78.6222 Y-195.1995
+G1 X77.5194 Y-194.6612
+G1 X76.4302 Y-194.0961
+G1 X75.3551 Y-193.5043
+G1 X74.2949 Y-192.8864
+G1 X73.2501 Y-192.2427
+G1 X72.2215 Y-191.5735
+G1 X71.2096 Y-190.8792
+G1 X70.2150 Y-190.1604
+G1 X69.2384 Y-189.4173
+G1 X68.2803 Y-188.6505
+G1 X67.3414 Y-187.8604
+G1 X66.4221 Y-187.0476
+G1 X65.5230 Y-186.2124
+G1 X64.6447 Y-185.3553
+G1 X63.7876 Y-184.4770
+G1 X62.9524 Y-183.5779
+G1 X62.1396 Y-182.6586
+G1 X61.3495 Y-181.7197
+G1 X60.5827 Y-180.7616
+G1 X59.8396 Y-179.7850
+G1 X59.1208 Y-178.7904
+G1 X58.4265 Y-177.7785
+G1 X57.7573 Y-176.7499
+G1 X57.1136 Y-175.7051
+G1 X56.4957 Y-174.6449
+G1 X55.9039 Y-173.5698
+G1 X55.3388 Y-172.4806
+G1 X54.8005 Y-171.3778
+G1 X54.2895 Y-170.2621
+G1 X53.8060 Y-169.1342
+G1 X53.3504 Y-167.9948
+G1 X52.9228 Y-166.8445
+G1 X52.5236 Y-165.6841
+G1 X52.1530 Y-164.5142
+G1 X51.8112 Y-163.3356
+G1 X51.4984 Y-162.1490
+G1 X51.2149 Y-160.9551
+G1 X50.9607 Y-159.7545
+G1 X50.7361 Y-158.5481
+G1 X50.5412 Y-157.3365
+G1 X50.3760 Y-156.1205
+G1 X50.2408 Y-154.9009
+G1 X50.1355 Y-153.6782
+G1 X50.0602 Y-152.4534
+G1 X50.0151 Y-151.2271
+G1 X50.0000 Y-150.0000
+G1 X50.0151 Y-148.7729
+G1 X50.0602 Y-147.5466
+G1 X50.1355 Y-146.3218
+G1 X50.2408 Y-145.0991
+G1 X50.3760 Y-143.8795
+G1 X50.5412 Y-142.6635
+G1 X50.7361 Y-141.4519
+G1 X50.9607 Y-140.2455
+G1 X51.2149 Y-139.0449
+G1 X51.4984 Y-137.8510
+G1 X51.8112 Y-136.6644
+G1 X52.1530 Y-135.4858
+G1 X52.5236 Y-134.3159
+G1 X52.9228 Y-133.1555
+G1 X53.3504 Y-132.0052
+G1 X53.8060 Y-130.8658
+G1 X54.2895 Y-129.7379
+G1 X54.8005 Y-128.6222
+G1 X55.3388 Y-127.5194
+G1 X55.9039 Y-126.4302
+G1 X56.4957 Y-125.3551
+G1 X57.1136 Y-124.2949
+G1 X57.7573 Y-123.2501
+G1 X58.4265 Y-122.2215
+G1 X59.1208 Y-121.2096
+G1 X59.8396 Y-120.2150
+G1 X60.5827 Y-119.2384
+G1 X61.3495 Y-118.2803
+G1 X62.1396 Y-117.3414
+G1 X62.9524 Y-116.4221
+G1 X63.7876 Y-115.5230
+G1 X64.6447 Y-114.6447
+G1 X65.5230 Y-113.7876
+G1 X66.4221 Y-112.9524
+G1 X67.3414 Y-112.1396
+G1 X68.2803 Y-111.3495
+G1 X69.2384 Y-110.5827
+G1 X70.2150 Y-109.8396
+G1 X71.2096 Y-109.1208
+G1 X72.2215 Y-108.4265
+G1 X73.2501 Y-107.7573
+G1 X74.2949 Y-107.1136
+G1 X75.3551 Y-106.4957
+G1 X76.4302 Y-105.9039
+G1 X77.5194 Y-105.3388
+G1 X78.6222 Y-104.8005
+G1 X79.7379 Y-104.2895
+G1 X80.8658 Y-103.8060
+G1 X82.0052 Y-103.3504
+G1 X83.1555 Y-102.9228
+G1 X84.3159 Y-102.5236
+G1 X85.4858 Y-102.1530
+G1 X86.6644 Y-101.8112
+G1 X87.8510 Y-101.4984
+G1 X89.0449 Y-101.2149
+G1 X90.2455 Y-100.9607
+G1 X91.4519 Y-100.7361
+G1 X92.6635 Y-100.5412
+G1 X93.8795 Y-100.3760
+G1 X95.0991 Y-100.2408
+G1 X96.3218 Y-100.1355
+G1 X97.5466 Y-100.0602
+G1 X98.7729 Y-100.0151
+G1 X100.0000 Y-100.0000
+G1 X101.2271 Y-100.0151
+G1 X102.4534 Y-100.0602
+G1 X103.6782 Y-100.1355
+G1 X104.9009 Y-100.2408
+G1 X106.1205 Y-100.3760
+G1 X107.3365 Y-100.5412
+G1 X108.5481 Y-100.7361
+G1 X109.7545 Y-100.9607
+G1 X110.9551 Y-101.2149
+G1 X112.1490 Y-101.4984
+G1 X113.3356 Y-101.8112
+G1 X114.5142 Y-102.1530
+G1 X115.6841 Y-102.5236
+G1 X116.8445 Y-102.9228
+G1 X117.9948 Y-103.3504
+G1 X119.1342 Y-103.8060
+G1 X120.2621 Y-104.2895
+G1 X121.3778 Y-104.8005
+G1 X122.4806 Y-105.3388
+G1 X123.5698 Y-105.9039
+G1 X124.6449 Y-106.4957
+G1 X125.7051 Y-107.1136
+G1 X126.7499 Y-107.7573
+G1 X127.7785 Y-108.4265
+G1 X128.7904 Y-109.1208
+G1 X129.7850 Y-109.8396
+G1 X130.7616 Y-110.5827
+G1 X131.7197 Y-111.3495
+G1 X132.6586 Y-112.1396
+G1 X133.5779 Y-112.9524
+G1 X134.4770 Y-113.7876
+G1 X135.3553 Y-114.6447
+G1 X136.2124 Y-115.5230
+G1 X137.0476 Y-116.4221
+G1 X137.8604 Y-117.3414
+G1 X138.6505 Y-118.2803
+G1 X139.4173 Y-119.2384
+G1 X140.1604 Y-120.2150
+G1 X140.8792 Y-121.2096
+G1 X141.5735 Y-122.2215
+G1 X142.2427 Y-123.2501
+G1 X142.8864 Y-124.2949
+G1 X143.5043 Y-125.3551
+G1 X144.0961 Y-126.4302
+G1 X144.6612 Y-127.5194
+G1 X145.1995 Y-128.6222
+G1 X145.7105 Y-129.7379
+G1 X146.1940 Y-130.8658
+G1 X146.6496 Y-132.0052
+G1 X147.0772 Y-133.1555
+G1 X147.4764 Y-134.3159
+G1 X147.8470 Y-135.4858
+G1 X148.1888 Y-136.6644
+G1 X148.5016 Y-137.8510
+G1 X148.7851 Y-139.0449
+G1 X149.0393 Y-140.2455
+G1 X149.2639 Y-141.4519
+G1 X149.4588 Y-142.6635
+G1 X149.6240 Y-143.8795
+G1 X149.7592 Y-145.0991
+G1 X149.8645 Y-146.3218
+G1 X149.9398 Y-147.5466
+G1 X149.9849 Y-148.7729
+G1 X150.0000 Y-150.0000
+G0 Z-1
+
+G0 X210 Y0 (HOME)
+
+M2
+`;
+
+(() => {
+  const $ = id => document.getElementById(id);
+  const logEl = $('log'), cmdEl = $('cmd'), gEl = $('gcode');
+  const enc = new TextEncoder();
+  let port, reader, writer, keepReading = false, pollTimer, buf = '';
+  const history = []; let histIdx = 0;
+
+  // ---- theme ----
+  const savedTheme = (() => { try { return localStorage.getItem('theme'); } catch { return null; } })();
+  if (savedTheme === 'dark') { document.body.classList.add('dark'); $('theme').checked = true; }
+  $('theme').onchange = e => {
+    document.body.classList.toggle('dark', e.target.checked);
+    try { localStorage.setItem('theme', e.target.checked ? 'dark' : 'light'); } catch {}
+  };
+
+  // ---- G-code viewer ----
+  const lines = GCODE.split('\n');
+  const rows = lines.map((t, i) => {
+    const d = document.createElement('div'); d.className = 'ln';
+    d.innerHTML = '<span class="n">' + (i + 1) + '</span><span></span>';
+    d.lastChild.textContent = t; gEl.appendChild(d); return d;
+  });
+  const clean = t => t.replace(/\(.*?\)/g, '').replace(/;.*$/, '').trim();
+
+  let idx = 0, running = false, paused = false, waiting = false, pauseNote = '';
+
+  function updateInfo() {
+    $('runinfo').textContent = 'Line ' + Math.min(idx + (waiting ? 1 : 0), lines.length) + ' / ' + lines.length + (paused && running ? ' · ' + (pauseNote || 'paused') : '');
+    $('progress').firstChild.style.width = (100 * idx / lines.length) + '%';
+  }
+  function mark() {
+    rows.forEach((r, i) => { r.classList.toggle('done', i < idx); r.classList.toggle('cur', i === idx && (running || waiting)); });
+    rows[Math.min(idx, rows.length - 1)].scrollIntoView({ block: 'center' });
+    updateInfo();
+  }
+  function buttons() {
+    const on = !!writer;
+    $('run').disabled = !on || running; $('step').disabled = !on || running && !paused || waiting;
+    $('pause').disabled = !on || !running; $('stop').disabled = !on || (!running && idx === 0);
+    $('pause').textContent = paused ? 'Resume' : 'Pause';
+    $('run').textContent = idx > 0 && idx < lines.length && !running ? 'Continue' : 'Run';
+  }
+
+  function pump(single) {
+    if (!writer || waiting || (paused && !single)) return;
+    while (idx < lines.length && !clean(lines[idx])) idx++;          // skip blank/comment lines
+    if (idx >= lines.length) { running = false; paused = false; log('Program finished', 'sys'); mark(); buttons(); return; }
+    waiting = true; mark();
+    sendLine(clean(lines[idx])).catch(e => { log('Write error: ' + e.message, 'err'); haltStream(); });
+    buttons();
+    if (single) running = running; // step: only one line, ok handler won't continue unless running
+  }
+  function onOk() {
+    if (!waiting) return;
+    waiting = false; idx++; mark();
+    if (running && !paused) pump(); else buttons();
+  }
+  function onError() {
+    if (!waiting) return;
+    waiting = false; paused = true; mark(); buttons();
+    log('Stopped at line ' + (idx + 1) + ' — fix the issue, then Resume or Stop', 'sys');
+  }
+  // The controller can pause by itself (M0 in the program) or the user can hit Hold in the console.
+  // GRBL does not answer 'ok' for an M0 line until it is resumed, so the status report is what tells us.
+  function onStatus(st) {
+    if (!running) return;
+    if (st === 'Hold:0' && !paused) {
+      paused = true;
+      pauseNote = waiting && /\bM0*\b(?!\.?\d)/i.test(clean(lines[idx] || '')) ? 'paused by M0' : 'held by controller';
+      log('Program paused (' + pauseNote + ') at line ' + (idx + 1) + ' — press Resume to continue', 'sys');
+      mark(); buttons();
+    } else if (paused && pauseNote && !st.startsWith('Hold')) {
+      // resumed from elsewhere (e.g. the ~ button in the console)
+      paused = false; pauseNote = ''; mark(); buttons(); pump();
+    }
+  }
+  function haltStream() { running = false; paused = false; waiting = false; pauseNote = ''; mark(); buttons(); }
+
+  $('run').onclick = () => { if (idx >= lines.length) idx = 0; running = true; paused = false; pump(); };
+  $('step').onclick = () => { if (idx >= lines.length) idx = 0; if (!running) { pump(true); } else if (paused) { pump(true); } };
+  $('pause').onclick = () => {
+    if (!paused) { paused = true; pauseNote = 'paused'; sendRealtime('!'); }
+    else { paused = false; pauseNote = ''; sendRealtime('~'); pump(); mark(); }
+    buttons();
+  };
+  $('stop').onclick = async () => {
+    await sendRealtime('!'); haltStream();
+    setTimeout(() => { sendRealtime('\x18'); idx = 0; mark(); buttons(); }, 150);
+    log('Program stopped (feed hold + reset)', 'sys');
+  };
+
+  // ---- console ----
+  function log(text, cls) {
+    const bottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
+    const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = text;
+    logEl.appendChild(d);
+    while (logEl.children.length > 2000) logEl.removeChild(logEl.firstChild);
+    if (bottom) logEl.scrollTop = logEl.scrollHeight;
+  }
+  function setConnected(on) {
+    $('connect').textContent = on ? 'Disconnect' : 'Connect';
+    cmdEl.disabled = $('send').disabled = !on; $('baud').disabled = on;
+    buttons(); if (on) cmdEl.focus();
+  }
+
+  async function connect() {
+    if (!('serial' in navigator)) { log('Web Serial not supported. Use Chrome or Edge.', 'err'); return; }
+    try { port = await navigator.serial.requestPort(); await port.open({ baudRate: +$('baud').value }); }
+    catch (e) { log('Connection failed: ' + e.message, 'err'); return; }
+    writer = port.writable.getWriter(); keepReading = true; setConnected(true);
+    log('Connected at ' + $('baud').value + ' baud', 'sys');
+    readLoop(); setTimeout(() => sendRealtime('\x18'), 100);
+    pollTimer = setInterval(() => { if (($('poll').checked || running) && writer) sendRealtime('?').catch(() => {}); }, 250);
+  }
+  async function disconnect() {
+    keepReading = false; clearInterval(pollTimer); haltStream();
+    try { await reader?.cancel(); } catch {}
+    try { writer?.releaseLock(); } catch {}
+    try { await port?.close(); } catch {}
+    port = reader = writer = null; setConnected(false); log('Disconnected', 'sys');
+  }
+  async function readLoop() {
+    const dec = new TextDecoder();
+    while (port?.readable && keepReading) {
+      reader = port.readable.getReader();
+      try {
+        while (true) {
+          const { value, done } = await reader.read(); if (done) break;
+          buf += dec.decode(value, { stream: true }); let i;
+          while ((i = buf.search(/\r?\n/)) >= 0) { handleLine(buf.slice(0, i)); buf = buf.slice(i + (buf[i] === '\r' ? 2 : 1)); }
+        }
+      } catch (e) { if (keepReading) log('Read error: ' + e.message, 'err'); }
+      finally { reader.releaseLock(); }
+    }
+    if (keepReading) disconnect();
+  }
+  function handleLine(l) {
+    if (!l.trim()) return;
+    if (l[0] === '<' && l.endsWith('>')) { const st = l.slice(1, -1); $('state').textContent = 'State: ' + st; onStatus(st.split('|')[0]); return; }
+    const isErr = /^(error|ALARM)/i.test(l);
+    log(l, isErr ? 'err' : '');
+    if (/^ok/i.test(l)) onOk(); else if (isErr) onError();
+  }
+  async function sendLine(t) { await writer.write(enc.encode(t + '\n')); log('> ' + t, 'tx'); }
+  async function sendRealtime(c) {
+    if (!writer) return; await writer.write(enc.encode(c));
+    if (c !== '?') log('> [' + (c === '\x18' ? 'reset' : c) + ']', 'tx');
+  }
+
+  $('connect').onclick = () => port ? disconnect() : connect();
+  $('clear').onclick = () => { logEl.textContent = ''; };
+  $('form').onsubmit = e => {
+    e.preventDefault(); const t = cmdEl.value.trim(); if (!t) return;
+    history.push(t); histIdx = history.length; cmdEl.value = '';
+    sendLine(t).catch(err => log('Write error: ' + err.message, 'err'));
+  };
+  cmdEl.onkeydown = e => {
+    if (e.key === 'ArrowUp' && histIdx > 0) { cmdEl.value = history[--histIdx]; e.preventDefault(); }
+    else if (e.key === 'ArrowDown') { cmdEl.value = histIdx < history.length - 1 ? history[++histIdx] : (histIdx = history.length, ''); e.preventDefault(); }
+  };
+  document.querySelectorAll('[data-cmd]').forEach(b => b.onclick = () => sendLine(b.dataset.cmd));
+  document.querySelectorAll('[data-rt]').forEach(b => b.onclick = () => sendRealtime(b.dataset.rt === 'reset' ? '\x18' : b.dataset.rt));
+  navigator.serial?.addEventListener('disconnect', () => { if (port) disconnect(); });
+  setConnected(false); mark();
+})();
+</script>
+</body>
+</html>
